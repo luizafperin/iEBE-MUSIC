@@ -1,0 +1,13 @@
+*.[oa]
+*.~
+*.swp
+.DS_Store
+results/
+build/
+*.e
+*.DAT
+*.txt
+LHAPDF_Lib/
+lib/
+*.dat
+*.bin.in
