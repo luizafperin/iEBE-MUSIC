@@ -1,1 +1,0 @@
-/home/luizaperin/iEBE-MUSIC/hrg_s1_run1/codes/isobar_sampler_code/exec/build_isobars.py
