@@ -8,7 +8,7 @@
 control_dict = {
     'initial_state_type': "TRENTo",
     'walltime': "10:00:00",  # walltime to run
-    'afterburner_type': "SMASH",  # hadronic afterburner type
+    'afterburner_type': "UrQMD",  # hadronic afterburner type
     'save_hydro_surfaces': False,  # flag to save hydro surfaces
     'save_UrQMD_files': True,  # flag to save UrQMD files
     }
@@ -122,7 +122,7 @@ trento_dict = {
     'quiet': True, ###
     'output': 'test_path.dat',
     'reduced-thickness': 0, ###
-    'fluctuation': 1 ,      # gamma fluctuations
+    'fluctuation': 1,      # gamma fluctuations
     'nucleon-width': 0.5,    # nucleon width
     'cross-section': 4.23,   # inelastic nucleon-nucleon cross-section
     'normalization': 15,      # normalization
@@ -142,8 +142,8 @@ music_dict = {
         0.2,  # starting time of the hydrodynamic evolution (fm/c)
     'Delta_Tau': 0.005,  # time step to use in the evolution [fm/c]
     'boost_invariant': 1,  # whether the simulation is boost-invariant
-    'EOS_to_use': 9,  # type of the equation of state
-    # 9: hotQCD EOS with UrQMD
+    'EOS_to_use': 24,  # type of the equation of state
+    # 24: EOS-gp
     # transport coefficients
     'Eta_grid_size': 1.0,
     'Grid_size_in_eta': 1.0,

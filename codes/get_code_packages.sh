@@ -34,14 +34,14 @@ rm -fr kompost_code/.git
 
 # download MUSIC
 rm -fr MUSIC_code
-git clone https://github.com/MUSIC-fluid/MUSIC -b public_stable MUSIC_code
-#(cd MUSIC_code; git checkout e898cc826efc0303f2dd688602e6c604c9ef0f91)
+git clone --depth=3 https://github.com/luizafperin/MUSIC -b main MUSIC_code
+(cd MUSIC_code; git checkout 0f6366a1fa2a464c997209eeb9d02d0575672b46)
 rm -fr MUSIC_code/.git
 
 # download iSS particle sampler
 rm -fr iSS_code
-git clone https://github.com/chunshen1987/iSS -b XSCAPE iSS_code
-#(cd iSS_code; git checkout b612a8e425d3e1dfc2d2b71cd208df6810c783be)
+git clone --depth=3 https://github.com/luizafperin/iSS -b XSCAPE iSS_code
+(cd iSS_code; git checkout 81ed0b78bd6e0012c19cd13348f3d6aa02f4137e)
 rm -fr iSS_code/.git
 
 # download photonEmission wrapper
@@ -101,4 +101,4 @@ rm -fr hadronic_afterburner_toolkit_code/.git
 # download nucleus configurations for IP-Glasma
 (cd ipglasma_code/nucleusConfigurations; bash download_nucleusTables.sh;)
 # download essential EOS files for hydro simulations
-(cd MUSIC_code/EOS; bash download_hotQCD.sh; bash download_hotQCD.sh SMASH_binary; bash download_Neos2D.sh bqs;)
+(cd MUSIC_code/EOS; bash download_hotQCD.sh; bash download_hotQCD.sh SMASH_binary; bash download_Neos2D.sh bqs; bash download_EOS-gp.sh;)

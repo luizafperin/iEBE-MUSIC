@@ -145,6 +145,7 @@ trento_dict = {
     'quiet': True, ###
     'output': 'test_path.dat',
     'reduced-thickness': 0, ###
+    'random-seed': 12345,
     'fluctuation': 1 ,      # gamma fluctuations
     'nucleon-width': 0.5,    # nucleon width
     'cross-section': 6.4,   # inelastic nucleon-nucleon cross-section
@@ -617,7 +618,7 @@ iss_dict = {
         0,  # output particle samples into individual files
     'store_samples_in_memory': 1,  # flag to store particle samples in memory
     'use_OSCAR_format': 1,  # output results in OSCAR format
-    'use_OSCAR2013': 1,  # output results in OSCAR2013 format
+    'use_OSCAR2013': 0,  # output results in OSCAR2013 format
     'use_gzip_format': 0,  # output results in gzip format (only works with
     # store_samples_in_memory = 1)
     'use_binary_format': 0,

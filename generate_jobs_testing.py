@@ -1,0 +1,1495 @@
+#!/usr/bin/env python3
+"""This script generate all the running jobs."""
+
+import sys
+import re
+from os import path, mkdir, remove
+import shutil
+import subprocess
+import argparse
+import pickle
+import random
+import time
+import yaml
+from math import ceil
+from glob import glob
+from utilities.Pick_EOS_From_File import fetch_an_EOS
+from utilities.Pick_QGPviscosity_From_File import fetchShearViscosity1D, fetchBulkViscosity1D
+
+centrality_list = [(0.00, 0.15, '0-5', 0.05), (0.15, 0.30, '5-10', 0.05),
+                   (0.30, 0.45, '10-20', 0.10), (0.45, 0.55, '20-30', 0.10),
+                   (0.55, 0.65, '30-40', 0.10), (0.65, 0.75, '40-50', 0.10),
+                   (0.75, 0.80, '50-60', 0.10), (0.80, 0.85, '60-70', 0.10),
+                   (0.85, 0.90, '70-80', 0.10), (0.90, 0.95, '80-90', 0.10),
+                   (0.95, 1.00, '90-100', 0.10)]
+
+known_initial_types = [
+    "IPGlasma", "IPGlasma+KoMPoST", "3DMCGlauber_dynamical",
+    "3DMCGlauber_participants", "3DMCGlauber_consttau", "TRENTo"
+]
+
+known_afterburner_types = [
+    "UrQMD",
+    "decay",
+    "SMASH"
+]
+
+support_cluster_list = [
+    'nersc', 'wsugrid', "osg", "local", "guillimin", "mcgill", 'stampede2',
+    "anvil"
+]
+
+
+def write_script_header(cluster, script, n_threads, event_id, walltime,
+                        working_folder):
+    """This function write the header of the job submission script"""
+    mem = 4*n_threads
+    if cluster == "nersc":
+        script.write("""#!/bin/bash -l
+#SBATCH -p shared
+#SBATCH -n 1
+#SBATCH -J {0:s}
+#SBATCH -t {1:s}
+#SBATCH -L SCRATCH
+""".format(event_id, walltime))
+    elif cluster == "guillimin":
+        script.write("""#!/usr/bin/env bash
+#PBS -N {0:s}
+#PBS -l nodes=1:ppn={1:d}
+#PBS -l walltime={2:s}
+#PBS -S /bin/bash
+#PBS -e test.err
+#PBS -o test.log
+#PBS -A cqn-654-ad
+#PBS -q sw
+#PBS -d {3:s}
+""".format(event_id, n_threads, walltime, working_folder))
+    elif cluster == "mcgill":
+        script.write("""#!/usr/bin/env bash
+#PBS -N {0:s}
+#PBS -l nodes=1:ppn={1:d}:irulan
+#PBS -l walltime={2:s}
+#PBS -S /bin/bash
+#PBS -e test.err
+#PBS -o test.log
+#PBS -d {3:s}
+""".format(event_id, n_threads, walltime, working_folder))
+    elif cluster == "wsugrid":
+        script.write("""#!/usr/bin/env bash
+#SBATCH --job-name {0:s}
+#SBATCH -q primary
+#SBATCH -N 1
+#SBATCH -n {1:d}
+#SBATCH --mem={2:.0f}G
+#SBATCH -t {3:s}
+#SBATCH -e job.err
+#SBATCH -o job.log
+
+cd {4:s}
+""".format(event_id, n_threads, mem, walltime, working_folder))
+    elif cluster == "stampede2":
+        script.write("""#!/usr/bin/env bash
+
+source $WORK/iEBE-MUSIC/Cluster_supports/Stampede2/bashrc
+""")
+    elif cluster == "anvil":
+        script.write("""#!/usr/bin/env bash
+
+source $PROJECT/iEBE-MUSIC/Cluster_supports/Anvil/bashrc
+""")
+    elif cluster in ("local", "osg"):
+        script.write("#!/bin/bash")
+    else:
+        print("\U0001F6AB  unrecoginzed cluster name :", cluster)
+        print("Available options: ", support_cluster_list)
+        exit(1)
+
+
+def generate_Stampede2_mpi_job_script(folder_name, nodeType, n_nodes, n_jobs,
+                                      n_threads, walltime):
+    """This function generates job script for Stampede2"""
+    working_folder = folder_name
+
+    if nodeType not in ["skx", "icx", "knl"]:
+        nodeType = "skx"
+
+    queueName = '{}-normal'.format(nodeType)
+    if nodeType == "knl":
+        queueName = 'normal'
+
+    script = open(path.join(working_folder, "submit_MPI_jobs.script"), "w")
+    script.write("""#!/bin/bash -l
+#SBATCH -J iEBEMUSIC
+#SBATCH -o job.o%j
+#SBATCH -e job.e%j
+#SBATCH -p {0:s}
+#SBATCH -N {1:d}
+#SBATCH -n {2:d}
+#SBATCH -t {3:s}
+#SBATCH -A TG-PHY210068
+##SBATCH -A TG-PHY200093
+
+source $WORK/iEBE-MUSIC/Cluster_supports/Stampede2/bashrc
+
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+export OMP_NUM_THREADS={4:d}
+
+module load ooops
+set_io_param_batch $SLURM_JOBID 0 low
+
+ibrun python3 job_MPI_wrapper.py
+
+# after all runs finish, collect results into one hdf5 file
+# and transfer it to $WORK
+rm -fr temp
+mkdir temp
+./collect_events_singularity.sh `pwd` temp
+mkdir -p $WORK/RESULTS
+cp -r temp/* $WORK/RESULTS/
+rm -fr `pwd`
+
+""".format(queueName, n_nodes, n_jobs, walltime, n_threads))
+    script.close()
+
+
+def generate_Anvil_mpi_job_script(folder_name, queueName, n_nodes, nTaskPerNode,
+                                  n_threads, walltime):
+    """This function generates job script for Anvil"""
+    working_folder = folder_name
+
+    if queueName not in ["wholenode", "wide", "shared"]:
+        queueName = "wholenode"
+
+    script = open(path.join(working_folder, "submit_MPI_jobs.script"), "w")
+    script.write("""#!/bin/bash -l
+#SBATCH -J iEBEMUSIC
+#SBATCH -o job.o%j
+#SBATCH -e job.e%j
+#SBATCH -p {0:s}
+#SBATCH --nodes={1:d}
+#SBATCH --ntasks-per-node={2:d}
+#SBATCH --cpus-per-task={4:d}
+#SBATCH --time={3:s}
+#SBATCH -A phy210068
+
+source $PROJECT/iEBE-MUSIC/Cluster_supports/Anvil/bashrc
+
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+mpirun -np $SLURM_NTASKS python3 job_MPI_wrapper.py
+
+# after all runs finish, collect results into one hdf5 file
+# and transfer it to $PROJECT
+rm -fr temp
+mkdir temp
+./collect_events.sh `pwd` temp
+mkdir -p $PROJECT/RESULTS
+cp -r temp/* $PROJECT/RESULTS/
+rm -fr `pwd`
+
+""".format(queueName, n_nodes, nTaskPerNode, walltime, n_threads))
+    script.close()
+
+
+def generate_nersc_mpi_job_script(folder_name, nodeType, n_nodes, n_threads,
+                                  n_jobs_per_node, walltime):
+    """This function generates job script for NERSC"""
+    working_folder = folder_name
+
+    nodeOption = "haswell"
+    if nodeType == "knl":
+        nodeOption = "knl,quad,cache"
+
+    script = open(path.join(working_folder, "submit_MPI_jobs.script"), "w")
+    script.write("""#!/bin/bash -l
+#SBATCH --qos=regular
+#SBATCH -N {0:d}
+#SBATCH -A m1820
+#SBATCH -J music
+#SBATCH -t {1:s}
+#SBATCH -L SCRATCH
+#SBATCH -C {2:s}
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=chunshen1987@gmail.com
+
+export OMP_PROC_BIND=true
+export OMP_PLACES=threads
+
+num_of_nodes={0:d}
+# run all the job
+for (( nodeid=1; nodeid <= $num_of_nodes; nodeid++ ))
+do
+    export OMP_NUM_THREADS={3:d}
+    srun -N 1 -n {4:d} -c {3:d} python job_MPI_wrapper.py {4:d} $nodeid &
+done
+wait
+""".format(n_nodes, walltime, nodeOption, n_threads, n_jobs_per_node))
+    script.close()
+
+
+def generate_full_job_script(cluster_name, folder_name, database, initial_type,
+                             n_hydro, ev0_id, n_urqmd, n_threads, para_dict,
+                             afterburner_type):
+    """This function generates full job script"""
+    working_folder = folder_name
+    event_id = working_folder.split('/')[-1]
+    walltime = '100:00:00'
+
+    if cluster_name == "osg":
+        enableCheckPoint = True
+    else:
+        enableCheckPoint = False
+
+    script = open(path.join(working_folder, "submit_job.script"), "w")
+    write_script_header(cluster_name, script, n_threads, event_id, walltime,
+                        working_folder)
+    script.write("\nseed_add=${1:-0}\n")
+
+    try:
+        kompostFileName = para_dict.kompost_dict["KoMPoSTInputs"][
+            "OutputFileTag"]
+    except:
+        kompostFileName = "ekt"
+
+    script.write("""
+python3 hydro_plus_UrQMD_driver.py {0:s} {1:s} {2:d} {3:d} {4:d} {5:d} {6} {7} {8} {9} $seed_add {10} {11} {12} {13:s} {14:s}
+""".format(initial_type, database, n_hydro, ev0_id, n_urqmd, n_threads,
+           para_dict.control_dict["save_ipglasma_results"],
+           para_dict.control_dict["save_kompost_results"],
+           para_dict.control_dict["save_hydro_surfaces"],
+           para_dict.control_dict["save_UrQMD_files"],
+           para_dict.control_dict["compute_polarization"],
+           para_dict.control_dict["compute_photon_emission"], enableCheckPoint,
+           afterburner_type, kompostFileName))
+    script.write("""
+
+status=$?
+if [ $status -ne 0 ]; then
+    exit $status
+fi""")
+    script.close()
+    
+############## GENERATES SCRIPTS FOR TRENTo #######################
+def generate_script_trento(folder_name, nthreads, event_id):
+    """This function generates scripts for TRENTo simulation with Isobar-Sampler"""
+    
+    working_folder = folder_name
+    
+    script = open(path.join(working_folder, "run_trento.sh"), "w")
+    
+    results_folder = 'trento_results'
+    script.write("""#!/bin/bash
+
+results_folder={0:s}
+evid=$1
+
+ (
+cd TRENTo
+
+mkdir -p $results_folder
+rm -fr $results_folder/*
+""".format(results_folder))
+    
+    
+    if nthreads > 0:
+        script.write("""
+export OMP_NUM_THREADS={0:d}
+""".format(nthreads))
+    
+    script.write("""
+    # Run Isobar-Sampler ...
+
+(
+cd Isobar-Sampler_target
+./build_isobars.py isobars-conf_target.yaml > run.log
+mv nuclei_target ..
+)
+(
+cd Isobar-Sampler_projectile
+./build_isobars.py isobars-conf_projectile.yaml  > run.log
+mv nuclei_projectile ..
+)
+# Run TRENTo...
+./trento -c input > run.log
+mv test_path.dat $results_folder/
+ )
+""")
+    script.close()
+###################################################################
+
+def generate_script_ipglasma(folder_name, nthreads, event_id, logfile):
+    """This function generates script for IPGlasma simulation"""
+    working_folder = folder_name
+
+    script = open(path.join(working_folder, "run_ipglasma.sh"), "w")
+
+    results_folder = 'ipglasma_results'
+    script.write("""#!/bin/bash
+
+results_folder={0:s}
+evid=$1
+
+(
+cd ipglasma
+
+mkdir -p $results_folder
+rm -fr $results_folder/*
+
+""".format(results_folder))
+
+    if nthreads > 0:
+        script.write("""
+export OMP_NUM_THREADS={0:d}
+""".format(nthreads))
+
+    script.write("""
+# IPGlasma evolution (run 1 event)
+./ipglasma input 2>&1 {0}
+""".format(logfile))
+
+    script.write("""
+for ifile in *.dat
+do
+    filename=$(echo ${ifile} | sed "s/0.dat/${evid}.dat/")
+    cat ${ifile} | sed 's$N/A$0.0$g' | sed 's/Q_s/#Q_s/' > $results_folder/${filename}
+    rm -fr ${ifile}
+done
+mv run.log $results_folder/
+mv run.err $results_folder/
+)
+""")
+    script.close()
+
+
+def generate_script_kompost(folder_name, nthreads, logfile):
+    """This function generates script for KoMPoST simulation"""
+
+    working_folder = folder_name
+
+    script = open(path.join(working_folder, "run_kompost.sh"), "w")
+
+    hydro_results_folder = 'kompost_results'
+    script.write("""#!/bin/bash
+
+results_folder={0:s}
+
+(
+cd kompost
+
+mkdir -p $results_folder
+rm -fr $results_folder/*
+
+""".format(hydro_results_folder))
+
+    if nthreads > 0:
+        script.write("""
+export OMP_NUM_THREADS={0:d}
+""".format(nthreads))
+
+    script.write("""
+# KoMPoST EKT evolution
+./KoMPoST.exe setup.ini 2>&1 {0}
+mv *.txt $results_folder
+)
+""".format(logfile))
+
+    script.close()
+
+
+def generate_script_hydro(folder_name, nthreads):
+    """This function generates script for hydro simulation"""
+    working_folder = folder_name
+
+    script = open(path.join(working_folder, "run_hydro.sh"), "w")
+
+    hydro_results_folder = 'hydro_results'
+    script.write("""#!/bin/bash
+
+results_folder={0:s}
+
+(
+cd MUSIC
+
+rm -fr *.dat
+rm -fr $results_folder
+
+""".format(hydro_results_folder))
+
+    if nthreads > 0:
+        script.write("""
+export OMP_NUM_THREADS={0:d}
+""".format(nthreads))
+
+    script.write("""
+# hydro evolution
+./MUSIChydro music_input_mode_2 > run.log
+./sweeper.sh $results_folder
+)
+""")
+
+    script.close()
+
+
+def generate_script_photon(folder_name, nthreads, logfile):
+    """This function generates script for photon radiation"""
+
+    working_folder = folder_name
+
+    script = open(path.join(working_folder, "run_photon.sh"), "w")
+
+    script.write("""#!/bin/bash
+(
+cd photonEmission_hydroInterface
+
+""")
+    if nthreads > 0:
+        script.write("""
+export OMP_NUM_THREADS={0:d}
+""".format(nthreads))
+
+    script.write("""
+# perform photon radiation
+./hydro_photonEmission.e 2>&1 {0}
+)
+""".format(logfile))
+
+    script.close()
+
+
+def generate_script_spinPol(folder_name, nthreads, logfile, afterburner_type):
+    """This function generates script for spin polarization"""
+    working_folder = folder_name
+
+    if afterburner_type == "SMASH":
+        sub_ev_prefix = "SMASHev"
+        results_dir = "SMASH_results"
+    else:
+        sub_ev_prefix = "UrQMDev"
+        results_dir = "UrQMD_results"
+
+    script = open(path.join(working_folder, "run_spinPol.sh"), "w")
+    script.write("""#!/bin/bash
+
+unalias ls 2>/dev/null
+
+SubEventId=$1
+
+(
+cd {1:s}_$SubEventId
+
+mkdir -p {2:s}
+rm -fr {2:s}/*
+
+export OMP_NUM_THREADS={0:d}""".format(nthreads, sub_ev_prefix, results_dir))
+    script.write("""
+
+cd iSS
+mkdir -p results
+rm -fr results/*
+mv ../hydro_event/surface.dat results/surface.dat
+mv ../hydro_event/music_input results/music_input
+mv ../hydro_event/spectators.dat results/spectators.dat 2>/dev/null
+
+""".format(nthreads))
+    script.write("./iSS.e 2>&1 {0}\n".format(logfile))
+    script.write("""
+
+rm -fr ../hydro_event
+)
+""")
+    script.close()
+
+
+def generate_script_afterburner(folder_name, HBT_flag, afterburner_type,
+                                logfile):
+    """This function generates script for hadronic afterburner"""
+    working_folder = folder_name
+
+    if afterburner_type == "SMASH":
+        sub_ev_prefix = "SMASHev"
+        results_dir = "SMASH_results"
+    else:
+        sub_ev_prefix = "UrQMDev"
+        results_dir = "UrQMD_results"
+
+    script = open(path.join(working_folder, "run_afterburner.sh"), "w")
+    script.write("""#!/bin/bash
+
+unalias ls 2>/dev/null
+
+SubEventId=$1
+
+(
+cd {sub_ev_prefix}_$SubEventId
+
+mkdir -p {results_dir}
+rm -fr {results_dir}/*
+
+#surfaceFile=`ls hydro_event | grep "surface"`
+for iev in {{0..0}}
+do
+    hydro_folder="../EVENT_RESULTS_${{iev}}/hydro_results_${{iev}}"
+
+    # verify the folder exists
+    if [ ! -d "$hydro_folder" ]; then
+        echo "Error: Hydro folder not found: $hydro_folder"
+        exit 1
+    fi
+
+    # find the surface file inside the hydro folder
+    # surfaceFile=$(find "$hydro_folder" -maxdepth 1 -type f -name "surface_*.dat" | head -n 1)
+    
+    surface_candidates=("$hydro_folder"/surface_*.dat)
+
+    if [ ${{#surface_candidates[@]}} -eq 0 ]; then
+        echo "Error: No surface files found in $hydro_folder"
+        exit 1
+    fi
+
+    surfaceFile=$(realpath "${{surface_candidates[0]}}")
+    
+    export OMP_NUM_THREADS=1
+    cd iSS
+    
+    RANDOMSEED=`cat iSS_parameters.dat | grep "randomSeed" | cut -f 3 -d " "`
+    if [ $RANDOMSEED != "-1" ]; then
+        RANDOMSEED=$((RANDOMSEED + iev))
+    fi
+    
+    mkdir -p results
+    rm -fr results/*
+    
+    echo "Using surface file: $surfaceFile"
+    ls -l "$surfaceFile"
+    
+    ln -s "${{surfaceFile}}" results/surface.dat
+    cp ../../EVENT_RESULTS_${{iev}}/hydro_results_${{iev}}/music_input results/music_input
+    cp ../../EVENT_RESULTS_${{iev}}/hydro_results_${{iev}}/spectators.dat results/spectators.dat 2>/dev/null
+    
+    
+    if [ $SubEventId = "0" ] && [ $iev -eq "0" ]; then
+    """.format(sub_ev_prefix=sub_ev_prefix, results_dir=results_dir))
+    script.write("    ./iSS.e randomSeed=$RANDOMSEED 2>&1 {0}".format(logfile))
+    script.write("""
+    else
+        ./iSS.e randomSeed=$RANDOMSEED > run.log 2>&1
+        
+    fi
+    
+    if [ ! -f OSCAR.DAT ]; then
+        echo "ERROR: OSCAR.DAT not produced"
+        cat run.log
+        exit 1
+    fi
+
+    if [ ! -s OSCAR.DAT ]; then
+        echo "ERROR: OSCAR.DAT is empty"
+        cat run.log
+        exit 1
+    fi
+
+    ls -lh OSCAR.DAT
+    """)
+
+    if afterburner_type == "UrQMD":
+        script.write("""
+    cd ../osc2u
+    ./osc2u.e < ../iSS/OSCAR.DAT > run.log
+    
+    if [ ! -f fort.14 ]; then
+        echo "ERROR: osc2u did not produce fort.14"
+        cat run.log
+        exit 1
+    fi
+
+    ls -lh fort.14
+    
+    mv fort.14 ../urqmd/OSCAR.input
+    #rm -fr ../iSS/OSCAR.DAT
+    cd ../urqmd
+    ./runqmd.sh > run.log
+    mv particle_list.dat ../UrQMD_results/particle_list_${iev}.dat
+    rm -fr OSCAR.input
+    cd ..
+    ../hadronic_afterburner_toolkit/convert_to_binary.e UrQMD_results/particle_list_${iev}.dat binary
+    rm -fr UrQMD_results/particle_list_${iev}.dat
+    cat UrQMD_results/particle_list_${iev}.bin >> UrQMD_results/particle_list.bin
+    rm -fr UrQMD_results/particle_list_${iev}.bin
+done
+""")
+    elif afterburner_type == "decay":
+        script.write("""
+    cat particle_samples.bin >> ../UrQMD_results/particle_list.bin
+    rm -fr particle_samples.bin
+    cd ..
+done
+        """)
+    elif afterburner_type == "SMASH":
+        script.write("""
+    cp OSCAR.DAT ../SMASH/list/OSCAR.DAT0
+    cd ../SMASH
+    unset PYTHIA8DATA
+    ./smash -i list/config.yaml > run.log
+    cd ..
+    cp SMASH/data/0/particles_oscar2013_extended.bin {results_dir}/particle_list.bin
+done
+""".format(results_dir=results_dir))
+    if HBT_flag:
+        script.write("""
+    cd hadronic_afterburner_toolkit
+    mkdir -p results
+    cd results; rm -fr *
+    ln -s ../../{results_dir}/particle_list.bin particle_list.bin
+    cd ..
+""".format(results_dir=results_dir))
+        script.write('    if [ $SubEventId = "0" ]; then\n')
+        script.write(
+            "        ./hadronic_afterburner_tools.e analyze_flow=0 analyze_HBT=1 particle_monval=211 distinguish_isospin=1 event_buffer_size=500000 2>&1 {0}\n"
+            .format(logfile))
+        script.write("    else\n")
+        script.write(
+            "        ./hadronic_afterburner_tools.e analyze_flow=0 analyze_HBT=1 particle_monval=211 distinguish_isospin=1 event_buffer_size=500000 >> run.log\n"
+        )
+        script.write("    fi\n")
+        script.write("    mv results/HBT* ../{results_dir}/ \n".format(results_dir=results_dir))
+    script.write("""
+    rm -fr hydro_event
+)
+""")
+    script.close()
+
+
+def generate_script_analyze_spvn(folder_name, HBT_flag, logfile):
+    """This function generates script for analysis"""
+    working_folder = folder_name
+
+    script = open(path.join(working_folder, "run_analysis_spvn.sh"), "w")
+    script.write("""#!/bin/bash
+
+(
+    cd hadronic_afterburner_toolkit
+""")
+    script.write(
+        "   ./hadronic_afterburner_tools.e analyze_HBT=0 2>&1 {0}\n".format(
+            logfile))
+    if HBT_flag:
+        script.write(
+            "    python3 ./average_event_HBT_correlation_function.py .. results\n"
+        )
+    script.write(")\n")
+    script.close()
+
+
+def generate_isobar_seeds(code_path, working_folder, parameter_dict):
+    """Generate isobar nucleon seeds HDF file from the parameters dict.
+
+    Reads nuclear properties and seed filename from isobars_conf_dict_target
+    and generation settings from seeds_conf_dict (if present). Calls the
+    Isobar-Sampler generate_seeds.py script and returns the path to the
+    resulting HDF file.
+    """
+    seed_filename = (parameter_dict.isobars_conf_dict_target
+                     ['isobar_samples']['seeds_file']['filename'])
+    seed_file_path = path.join(working_folder, seed_filename)
+
+    if path.exists(seed_file_path):
+        print("Isobar seed file already exists at {}, skipping generation.".format(
+            seed_file_path))
+        return seed_file_path
+
+    print("Generating isobar seeds -> {} ...".format(seed_file_path))
+
+    if hasattr(parameter_dict, 'seeds_conf_dict'):
+        seeds_conf = parameter_dict.seeds_conf_dict
+    else:
+        seeds_conf = {'number_nucleons': 300, 'number_configs': 10000,
+                      'number_of_parallel_processes': 1}
+
+    n_nucleons = seeds_conf.get(
+        'number_nucleons',
+        parameter_dict.isobars_conf_dict_target['isobar_samples']['number_nucleons']['value']
+    )
+
+    seeds_conf_path = path.join(working_folder, 'seeds-conf.yaml')
+    seeds_data = {
+        'isobar_seeds': {
+            'description': 'Configurations for making list of seeds for nucleon positions.',
+            'number_nucleons': {
+                'description': 'Mass number A of the nuclei.',
+                'value': n_nucleons,
+            },
+            'number_configs': {
+                'description': 'How many sets of nucleon positions to sample?',
+                'value': seeds_conf['number_configs'],
+            },
+            'output_file': {
+                'description': 'Path where to save list of seeds for nucleon positions.',
+                'filename': seed_filename,
+            },
+            'number_of_parallel_processes': {
+                'description': 'Number of processes to compute in parallel. -1 = auto.',
+                'value': seeds_conf['number_of_parallel_processes'],
+            },
+        }
+    }
+    with open(seeds_conf_path, 'w') as f:
+        yaml.dump(seeds_data, f, sort_keys=False)
+
+    gen_script = path.abspath(
+        path.join(code_path, 'isobar_sampler_code/exec/make_seeds.py'))
+    status = subprocess.call(
+        'python3 {} {}'.format(gen_script, seeds_conf_path),
+        shell=True, cwd=working_folder)
+
+    if status != 0:
+        print("\U0001F6AB  Seed generation failed (exit code {})".format(status))
+        exit(status)
+    if not path.exists(seed_file_path):
+        print("\U0001F6AB  Seed file not found after generation: {}".format(
+            seed_file_path))
+        exit(1)
+
+    return seed_file_path
+
+
+def generate_event_folders(initial_condition_database, initial_condition_type,
+                           package_root_path, code_path, working_folder,
+                           cluster_name, event_id, event_id_offset,
+                           n_hydro_per_job, n_urqmd_per_hydro, n_threads,
+                           para_dict, afterburner_type, isobar_seed_file, EOSType: int,
+                           EOSId: int, EOSFileName: str, debugFlag: bool):
+    """This function creates the event folder structure"""
+    event_folder = path.join(working_folder, 'event_%d' % event_id)
+    param_folder = path.join(working_folder, 'model_parameters')
+    mkdir(event_folder)
+    shutil.copy(path.join(code_path, 'hydro_plus_UrQMD_driver.py'),
+                event_folder)
+    
+    #################################################################################
+    shutil.copy(path.join(code_path, 'analysis_cli_optimized.py'), event_folder)
+    #################################################################################
+    
+    shutil.copy(
+        path.join(package_root_path, 'utilities', 'IPGlasma_database',
+                  'fetch_IPGlasma_event_from_hdf5_database.py'), event_folder)
+    shutil.copy(
+        path.join(package_root_path, 'utilities', '3DMCGlauber_database',
+                  'fetch_3DMCGlauber_event_from_hdf5_database.py'),
+        event_folder)
+
+    logfile = ""
+    if cluster_name != "osg" or not debugFlag:
+        logfile = " >> run.log"
+
+    if (initial_condition_database == "self"
+            or initial_condition_database == "fixCentrality"):
+        if "3DMCGlauber" in initial_condition_type:
+            mkdir(path.join(event_folder, '3dMCGlauber'))
+            shutil.copyfile(path.join(param_folder, '3dMCGlauber/input'),
+                            path.join(event_folder, '3dMCGlauber/input'))
+            for link_i in ['3dMCGlb.e', 'eps09', 'tables']:
+                subprocess.call("ln -s {0:s} {1:s}".format(
+                    path.abspath(
+                        path.join(code_path,
+                                  '3dMCGlauber_code/{}'.format(link_i))),
+                    path.join(event_folder, "3dMCGlauber/{}".format(link_i))),
+                                shell=True)
+        ############################## GENERATE FOLDER OF ISOBAR AND TRENTo ##########################        
+        elif "TRENTo" in initial_condition_type:
+              generate_script_trento(event_folder, n_threads, event_id)
+              # Creation of Isobar and TRENTo event folders
+              mkdir(path.join(event_folder, 'TRENTo'))
+              mkdir(path.join(event_folder, 'TRENTo/Isobar-Sampler_target'))
+              mkdir(path.join(event_folder, 'TRENTo/Isobar-Sampler_projectile'))
+              
+              #################################start_configuration############################################
+              target_start = 2*event_id
+              projectile_start = 2*event_id + 1
+              
+              target_yaml_src = path.join(param_folder, 'Isobar-Sampler_target/isobars-conf_target.yaml')
+              projectile_yaml_src = path.join(param_folder, 'Isobar-Sampler_projectile/isobars-conf_projectile.yaml')
+              with open(target_yaml_src, "r") as f:
+                  target_conf = yaml.safe_load(f)
+                  
+              with open(projectile_yaml_src, "r") as f:
+                  projectile_conf = yaml.safe_load(f) 
+                  
+                  
+              target_conf["isobar_samples"]["number_configs"]["value"] = 1
+              projectile_conf["isobar_samples"]["number_configs"]["value"] = 1
+              
+              target_conf["isobar_samples"]["start_configuration"] = {
+                  "description": "Starting configuration index in the seeds file",
+                  "value": int(target_start),
+              }
+              
+              projectile_conf["isobar_samples"]["start_configuration"] = {
+                    "description": "Starting configuration index in the seeds file",
+                    "value": int(projectile_start),
+              }   
+              
+              with open(path.join(event_folder, 'TRENTo/Isobar-Sampler_target/isobars-conf_target.yaml'), "w") as f:
+                  yaml.dump(target_conf, f, sort_keys=False)
+                  
+              with open(path.join(event_folder, 'TRENTo/Isobar-Sampler_projectile/isobars-conf_projectile.yaml'), "w") as f:
+                  yaml.dump(projectile_conf, f, sort_keys=False)
+              # Copying the input files to the folders created above
+              shutil.copyfile(path.join(param_folder, 'TRENTo/input'),
+                              path.join(event_folder, 'TRENTo/input'))
+
+              seed_file_abs = path.abspath(isobar_seed_file)
+
+              subprocess.call("ln -s {0:s} {1:s}".format(
+                    seed_file_abs,
+                    path.join(event_folder, "TRENTo/Isobar-Sampler_projectile/nucleon-seeds.hdf")),
+                                shell=True)
+        
+              subprocess.call("ln -s {0:s} {1:s}".format(
+                    seed_file_abs,
+                    path.join(event_folder, "TRENTo/Isobar-Sampler_target/nucleon-seeds.hdf")),
+                                shell=True)
+             # Sets an absolute path to the Isobar and Trento exec
+              subprocess.call("ln -s {0:s} {1:s}".format(
+                    path.abspath(
+                        path.join(code_path,
+                                  'isobar_sampler_code/exec/build_isobars.py')),
+                    path.join(event_folder, "TRENTo/Isobar-Sampler_projectile/build_isobars.py")),
+                                shell=True)
+        
+              subprocess.call("ln -s {0:s} {1:s}".format(
+                    path.abspath(
+                        path.join(code_path,
+                                  'isobar_sampler_code/exec/build_isobars.py')),
+                    path.join(event_folder, "TRENTo/Isobar-Sampler_target/build_isobars.py")),
+                                shell=True)
+        
+        
+              subprocess.call("ln -s {0:s} {1:s}".format(
+                    path.abspath(
+                        path.join(code_path,
+                                  'trento_code/build/src/trento')),
+                    path.join(event_folder, "TRENTo/trento")),
+                                shell=True)        
+        ##############################################################################################   
+        elif initial_condition_type in ("IPGlasma", "IPGlasma+KoMPoST"):
+            generate_script_ipglasma(event_folder, n_threads, event_id, logfile)
+            mkdir(path.join(event_folder, 'ipglasma'))
+            shutil.copyfile(path.join(param_folder, 'IPGlasma/input'),
+                            path.join(event_folder, 'ipglasma/input'))
+            link_list = [
+                'qs2Adj_vs_Tp_vs_Y_200.in',
+                'utilities',
+                'ipglasma',
+                'nucleusConfigurations',
+                'tables',
+            ]
+            for link_i in link_list:
+                subprocess.call("ln -s {0:s} {1:s}".format(
+                    path.abspath(
+                        path.join(code_path,
+                                  'ipglasma_code/{}'.format(link_i))),
+                    path.join(event_folder, "ipglasma/{}".format(link_i))),
+                                shell=True)
+
+    generate_full_job_script(cluster_name, event_folder,
+                             initial_condition_database, initial_condition_type,
+                             n_hydro_per_job, event_id_offset,
+                             n_urqmd_per_hydro, n_threads, para_dict,
+                             afterburner_type)
+
+    if initial_condition_type == "IPGlasma+KoMPoST":
+        generate_script_kompost(event_folder, n_threads, logfile)
+        mkdir(path.join(event_folder, 'kompost'))
+        shutil.copyfile(path.join(param_folder, 'KoMPoST/setup.ini'),
+                        path.join(event_folder, 'kompost/setup.ini'))
+        for link_i in ['EKT', 'KoMPoST.exe']:
+            subprocess.call("ln -s {0:s} {1:s}".format(
+                path.abspath(
+                    path.join(code_path, 'kompost_code/{}'.format(link_i))),
+                path.join(event_folder, "kompost/{}".format(link_i))),
+                            shell=True)
+
+    # MUSIC
+    generate_script_hydro(event_folder, n_threads)
+
+    shutil.copytree(path.join(code_path, 'MUSIC'),
+                    path.join(event_folder, 'MUSIC'))
+    shutil.copyfile(path.join(param_folder, 'MUSIC/music_input_mode_2'),
+                    path.join(event_folder, 'MUSIC/music_input_mode_2'))
+    targetFile = path.join(code_path, 'MUSIC_code/MUSIChydro')
+    desLoc = path.join(event_folder, "MUSIC/MUSIChydro")
+    subprocess.call(f"ln -s {targetFile} {desLoc}", shell=True)
+    if EOSType != 42:
+        targetFile = path.join(code_path, 'MUSIC_code/EOS')
+        desLoc = path.join(event_folder, "MUSIC/EOS")
+        subprocess.call(f"ln -s {targetFile} {desLoc}", shell=True)
+    else:
+        eosDatabase = path.join(package_root_path, 'EOS_database', EOSFileName)
+        eosFileName = fetch_an_EOS(eosDatabase, EOSId)
+        mkdir(path.join(event_folder, "MUSIC/EOS"))
+        shutil.move(eosFileName,
+                    path.join(event_folder, "MUSIC/EOS/EoS_1DGen.bin"))
+        shearFileName = fetchShearViscosity1D(
+            path.join(package_root_path, 'EOS_database', 'eta_s.pkl'), EOSId)
+        bulkFileName = fetchBulkViscosity1D(
+            path.join(package_root_path, 'EOS_database', 'zeta_s.pkl'), EOSId)
+        shutil.move(shearFileName,
+                    path.join(event_folder, "MUSIC/EOS/shear_1DGen.bin"))
+        shutil.move(bulkFileName,
+                    path.join(event_folder, "MUSIC/EOS/bulk_1DGen.bin"))
+
+    if para_dict.control_dict['compute_photon_emission']:
+        # photon
+        generate_script_photon(event_folder, n_threads, logfile)
+        mkdir(path.join(event_folder, 'photonEmission_hydroInterface'))
+        shutil.copyfile(
+            path.join(param_folder, 'photonEmission_hydroInterface',
+                      'parameters.dat'),
+            path.join(event_folder, 'photonEmission_hydroInterface',
+                      'parameters.dat'))
+        for link_i in ['ph_rates', 'hydro_photonEmission.e']:
+            orgFilePath = path.abspath(
+                path.join(code_path, 'photonEmission_hydroInterface_code',
+                          '{}'.format(link_i)))
+            trgFilePath = path.join(event_folder,
+                                    "photonEmission_hydroInterface",
+                                    "{}".format(link_i))
+            subprocess.call("ln -s {0:s} {1:s}".format(orgFilePath,
+                                                       trgFilePath),
+                            shell=True)
+
+    # particlization + hadronic afterburner
+    HBT_flag = False
+    if "analyze_HBT" in para_dict.hadronic_afterburner_toolkit_dict:
+        if para_dict.hadronic_afterburner_toolkit_dict['analyze_HBT'] == 1:
+            HBT_flag = True
+
+    if para_dict.control_dict['compute_polarization']:
+        generate_script_spinPol(event_folder, n_threads, logfile,
+                                afterburner_type)
+
+    generate_script_afterburner(event_folder, HBT_flag, afterburner_type,
+                                logfile)
+
+    generate_script_analyze_spvn(event_folder, HBT_flag, logfile)
+
+    sub_ev_prefix = "SMASHev" if afterburner_type == "SMASH" else "UrQMDev"
+
+    nUrQMDFolders = n_urqmd_per_hydro
+    if para_dict.control_dict['compute_polarization']:
+        nUrQMDFolders += 1
+    for iev in range(nUrQMDFolders):
+        sub_event_folder = path.join(working_folder,
+                                     'event_{}'.format(event_id),
+                                     '{0}_{1}'.format(sub_ev_prefix, iev))
+        mkdir(sub_event_folder)
+        mkdir(path.join(sub_event_folder, 'iSS'))
+        iSSParamFile = 'iSS/iSS_parameters.dat'
+        shutil.copyfile(path.join(param_folder, iSSParamFile),
+                        path.join(sub_event_folder, iSSParamFile))
+        if para_dict.control_dict['compute_polarization']:
+            if iev < n_urqmd_per_hydro:
+                f1 = open("temp.dat", "w")
+                with open(path.join(sub_event_folder, iSSParamFile)) as f:
+                    for line in f:
+                        line2 = re.sub("calculate_polarization = 1",
+                                       "calculate_polarization = 0", line)
+                        f1.write(line2)
+                f1.close()
+                shutil.copyfile("temp.dat",
+                                path.join(sub_event_folder, iSSParamFile))
+            if iev == n_urqmd_per_hydro:
+                f1 = open("temp.dat", "w")
+                with open(path.join(sub_event_folder, iSSParamFile)) as f:
+                    for line in f:
+                        line2 = re.sub("MC_sampling = 4", "MC_sampling = 0",
+                                       line)
+                        f1.write(line2)
+                f1.close()
+                shutil.copyfile("temp.dat",
+                                path.join(sub_event_folder, iSSParamFile))
+            remove("temp.dat")
+
+        for link_i in ['iSS_tables', 'iSS.e']:
+            subprocess.call("ln -s {0:s} {1:s}".format(
+                path.abspath(path.join(code_path,
+                                       'iSS_code/{}'.format(link_i))),
+                path.join(sub_event_folder, "iSS/{}".format(link_i))),
+                            shell=True)
+        if afterburner_type == "UrQMD":
+            shutil.copytree(path.join(code_path, 'osc2u'),
+                            path.join(sub_event_folder, 'osc2u'))
+            shutil.copytree(path.join(code_path, 'urqmd'),
+                            path.join(sub_event_folder, 'urqmd'))
+            subprocess.call("ln -s {0:s} {1:s}".format(
+                path.abspath(path.join(code_path, 'urqmd_code/urqmd/urqmd.e')),
+                path.join(sub_event_folder, "urqmd/urqmd.e")),
+                            shell=True)
+        ############################# SMASH ####################################   
+        if afterburner_type == "SMASH":
+            smash_dir = path.join(sub_event_folder, 'SMASH')
+            smash_list_dir = path.join(smash_dir, 'list')
+            mkdir(smash_dir)
+            mkdir(smash_list_dir)
+            
+            subprocess.call("ln -s {0:s} {1:s}".format(
+                path.abspath(path.join(code_path, 'smash_code/build/smash')),
+                path.join(smash_dir, "smash")),
+                            shell=True)
+            shutil.copyfile(
+                path.join(param_folder, 'SMASH/config.yaml'),
+                path.join(smash_list_dir, 'config.yaml'))
+        #######################################################################
+        if HBT_flag:
+            shutil.copytree(
+                path.join(code_path, 'hadronic_afterburner_toolkit'),
+                path.join(sub_event_folder, 'hadronic_afterburner_toolkit'))
+            shutil.copyfile(
+                path.join(param_folder,
+                          'hadronic_afterburner_toolkit/parameters.dat'),
+                path.join(sub_event_folder,
+                          'hadronic_afterburner_toolkit/parameters.dat'))
+            for link_i in ['hadronic_afterburner_tools.e', 'EOS']:
+                subprocess.call("ln -s {0:s} {1:s}".format(
+                    path.abspath(
+                        path.join(
+                            code_path,
+                            'hadronic_afterburner_toolkit_code/{}'.format(
+                                link_i))),
+                    path.join(
+                        sub_event_folder,
+                        "hadronic_afterburner_toolkit/{}".format(link_i))),
+                                shell=True)
+    shutil.copytree(path.join(code_path, 'hadronic_afterburner_toolkit'),
+                    path.join(event_folder, 'hadronic_afterburner_toolkit'))
+    shutil.copyfile(
+        path.join(param_folder, 'hadronic_afterburner_toolkit/parameters.dat'),
+        path.join(event_folder, 'hadronic_afterburner_toolkit/parameters.dat'))
+    for link_i in ['hadronic_afterburner_tools.e', 'EOS']:
+        subprocess.call("ln -s {0:s} {1:s}".format(
+            path.abspath(
+                path.join(
+                    code_path,
+                    'hadronic_afterburner_toolkit_code/{}'.format(link_i))),
+            path.join(event_folder,
+                      "hadronic_afterburner_toolkit/{}".format(link_i))),
+                        shell=True)
+
+
+def create_a_working_folder(workfolder_path):
+    try:
+        mkdir(workfolder_path)
+    except FileExistsError:
+        print("The folder {} exists, do you want to delete it?".format(
+            workfolder_path))
+        user_answer = input()
+        if 'y' in user_answer:
+            shutil.rmtree(workfolder_path)
+            mkdir(workfolder_path)
+        else:
+            print("bye~\n")
+            exit(0)
+
+
+def main():
+    """This is the main funciton"""
+    parser = argparse.ArgumentParser(
+        description='\U0000269B Welcome to iEBE-MUSIC package',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-w',
+                        '--working_folder_name',
+                        metavar='',
+                        type=str,
+                        default='playground',
+                        help='working folder path')
+    parser.add_argument('-c',
+                        '--cluster_name',
+                        metavar='',
+                        type=str,
+                        default='local',
+                        help='name of the cluster')
+    parser.add_argument('--node_type',
+                        metavar='',
+                        type=str,
+                        default='CPU',
+                        help='Node type (work on stampede2, Anvil & nersc)')
+    parser.add_argument('-n',
+                        '--n_jobs',
+                        metavar='',
+                        type=int,
+                        default=1,
+                        help='number of jobs')
+    parser.add_argument('-n_hydro',
+                        '--n_hydro_per_job',
+                        metavar='',
+                        type=int,
+                        default=1,
+                        help='number of hydro events per job to run')
+    parser.add_argument('-n_urqmd',
+                        '--n_urqmd_per_hydro',
+                        metavar='',
+                        type=int,
+                        default=1,
+                        help=('number of oversampled UrQMD events '
+                              + 'per hydro to run'))
+    parser.add_argument('-n_th',
+                        '--n_threads',
+                        metavar='',
+                        type=int,
+                        default=1,
+                        help='number of threads used for each job')
+    parser.add_argument('-par',
+                        '--par_dict',
+                        metavar='',
+                        type=str,
+                        default='parameters_dict_user.py',
+                        help='user-defined parameter dictionary file')
+    parser.add_argument('-b',
+                        '--bayes_file',
+                        metavar='',
+                        type=str,
+                        default='',
+                        help='parameters from bayesian analysis')
+    parser.add_argument('-id',
+                        '--job_process_id',
+                        metavar='',
+                        type=int,
+                        default='0',
+                        help='Job process id number')
+    parser.add_argument('-seed',
+                        '--random_seed',
+                        metavar='',
+                        type=int,
+                        default='-1',
+                        help='Random Seed (-1: according to system time)')
+    #########################################################################
+    parser.add_argument('--isobar_seed_file',
+                        metavar='',
+                        type=str,
+                        default='',
+                        help=('Optional: path to a pre-generated isobar seed file. '
+                              'When TRENTo is selected and this is not provided, '
+                              'seeds are auto-generated from the parameters file. '
+                              'Ignored for all other initial condition types.'))
+    #########################################################################
+    parser.add_argument('--nocopy', action='store_true')
+    parser.add_argument("--continueFlag", action="store_true")
+    args = parser.parse_args()
+
+    if len(sys.argv) < 2:
+        parser.print_help()
+        exit(0)
+
+    # print out all the arguments
+    print("="*40)
+    print("\U0000269B   Input parameters")
+    print("="*40)
+    for iarg in vars(args):
+        print("\U0000269B   {}: {}".format(iarg, getattr(args, iarg)))
+    print("="*40)
+
+    try:
+        working_folder_name = args.working_folder_name
+        cluster_name = args.cluster_name.lower()
+        n_jobs = args.n_jobs
+        n_hydro_per_job = args.n_hydro_per_job
+        n_urqmd_per_hydro = args.n_urqmd_per_hydro
+        n_threads = args.n_threads
+        job_id = args.job_process_id
+        seed = args.random_seed
+        ###############################################
+        isobar_seed_file = args.isobar_seed_file
+        ###############################################
+    except:
+        parser.print_help()
+        exit(0)
+
+    code_package_path = path.abspath(path.dirname(__file__))
+
+    if n_threads < n_urqmd_per_hydro:
+        print("\U000026A0  "
+              + "Warning: n_threads = {} < n_urqmd_per_hydro = {}!".format(
+                  n_threads, n_urqmd_per_hydro))
+        print("reset n_threads to {}".format(n_urqmd_per_hydro))
+        n_threads = n_urqmd_per_hydro
+
+    par_diretory = path.dirname(path.abspath(args.par_dict))
+    sys.path.insert(0, par_diretory)
+    parameter_dict = __import__(args.par_dict.split('.py')[0].split("/")[-1])
+
+    if cluster_name == "osg":
+        if seed == -1:
+            seed = 0
+        seed += job_id
+        print("seed = ", seed)
+        args.nocopy = True
+
+    initial_condition_type = parameter_dict.control_dict['initial_state_type']
+    if initial_condition_type not in known_initial_types:
+        print("\U0001F6AB  "
+              + "Do not recognize the initial condition type: {}".format(
+                  initial_condition_type))
+        exit(1)
+
+    try:
+        afterburner_type = parameter_dict.control_dict['afterburner_type']
+    except KeyError:
+        afterburner_type = "UrQMD"
+    if afterburner_type not in known_afterburner_types:
+        print("\U0001F6AB  "
+              + f"Do not recognize the afterburner type: {afterburner_type}")
+        exit(1)
+
+    initial_condition_database = ""
+    if initial_condition_type == "IPGlasma":
+        if parameter_dict.ipglasma_dict['type'] == "self":
+            initial_condition_database = "self"
+        else:
+            initial_condition_database = (
+                parameter_dict.ipglasma_dict['database_name_pattern'])
+     ####################################################################TRENTo###############################################
+    elif initial_condition_type == "TRENTo":
+          if parameter_dict.trento_dict['type'] == "self":
+               initial_condition_database = "self"
+    ################################################################################################################################
+    elif initial_condition_type == "IPGlasma+KoMPoST":
+        if parameter_dict.ipglasma_dict['type'] == "self":
+            initial_condition_database = "self"
+        else:
+            initial_condition_database = (
+                parameter_dict.ipglasma_dict['database_name_pattern'])
+    elif initial_condition_type == "3DMCGlauber_consttau":
+        initial_condition_database = (
+            parameter_dict.mcglauber_dict['database_name'])
+        filelist = glob(
+            path.join(initial_condition_database, 'nuclear_thickness_TA_*.dat'))
+        nev = max(1, len(filelist))
+        print("there are {} events found under the folder {}".format(
+            nev, initial_condition_database))
+        n_jobs = min(nev, n_jobs)
+        n_hydro_per_job = int(ceil(nev/n_jobs))
+        print("n_jobs = {}, n_hydro_per_job = {}".format(
+            n_jobs, n_hydro_per_job))
+    else:
+        initial_condition_database = (
+            parameter_dict.mcglauber_dict['database_name'])
+
+    working_folder_name = path.abspath(working_folder_name)
+
+    if path.exists(working_folder_name) and args.continueFlag:
+        return
+
+    create_a_working_folder(working_folder_name)
+
+    shutil.copy(args.par_dict, working_folder_name)
+    code_path = path.join(code_package_path, "codes")
+    if not args.nocopy:
+        code_path = path.join(working_folder_name, "codes")
+        shutil.copytree("{}/codes".format(code_package_path), code_path)
+
+    usePosteriorParameters = False
+    if 'usePosteriorParameters' in parameter_dict.control_dict.keys():
+        usePosteriorParameters = (
+            parameter_dict.control_dict['usePosteriorParameters'])
+    if usePosteriorParameters:
+        if 'PosteriorChainFilePath' in parameter_dict.control_dict.keys():
+            posteriorChainFilePath = (
+                parameter_dict.control_dict['PosteriorChainFilePath'])
+            setId = parameter_dict.control_dict['PosteriorParamSet']
+            setFlag = parameter_dict.control_dict['PosteriorParamSetFlag']
+            if setId == -1:
+                if seed == -1:
+                    random.seed(time.time())
+                else:
+                    random.seed(seed)
+                setId = random.randint(0, 1000000)
+            paramFile = path.join(working_folder_name, "iEBE_parameters.txt")
+            subprocess.call(
+                "(cd {}/{}; python3 parameterGenerator.py {} {} {} {})".format(
+                    code_package_path, posteriorChainFilePath, setId, setFlag,
+                    paramFile, parameter_dict.mcglauber_dict['roots']),
+                shell=True)
+
+    if args.bayes_file != "":
+        args.bayes_file = path.join(path.abspath("."), args.bayes_file)
+        subprocess.call("(cd {}/config; ".format(code_package_path)
+                        + "python3 parameters_dict_master.py "
+                        + "-path {} -par {} -b {} -seed {};)".format(
+                            working_folder_name, path.abspath(args.par_dict),
+                            args.bayes_file, seed),
+                        shell=True)
+    elif usePosteriorParameters:
+        subprocess.call("(cd {}/config; ".format(code_package_path)
+                        + "python3 parameters_dict_master.py "
+                        + "-path {} -par {} -b {} -seed {};)".format(
+                            working_folder_name, path.abspath(args.par_dict),
+                            paramFile, seed),
+                        shell=True)
+    else:
+        subprocess.call(
+            "(cd {}/config; ".format(code_package_path)
+            + "python3 parameters_dict_master.py "
+            + "-path {} -par {} -seed {};)".format(
+                working_folder_name, path.abspath(args.par_dict), seed),
+            shell=True)
+
+    if (initial_condition_type not in ("IPGlasma", "IPGlasma+KoMPoST")
+            or initial_condition_database != "self"):
+        parameter_dict.control_dict['save_ipglasma_results'] = False
+    if initial_condition_type != "IPGlasma+KoMPoST":
+        parameter_dict.control_dict['save_kompost_results'] = False
+    if 'compute_polarization' not in parameter_dict.control_dict.keys():
+        parameter_dict.control_dict['compute_polarization'] = False
+    if 'calculate_polarization' in parameter_dict.iss_dict.keys():
+        if parameter_dict.iss_dict['calculate_polarization'] == 1:
+            parameter_dict.control_dict['compute_polarization'] = True
+    if 'compute_photon_emission' not in parameter_dict.control_dict.keys():
+        parameter_dict.control_dict['compute_photon_emission'] = False
+
+    EOSType = 9
+    EOSId = 0
+    EOSFileName = "EoS.pkl"
+    if 'EOSType' in parameter_dict.control_dict.keys():
+        EOSType = parameter_dict.control_dict['EOSType']
+        EOSId = parameter_dict.control_dict['EOSId']
+        if 'EOSFileName' in parameter_dict.control_dict.keys():
+            EOSFileName = parameter_dict.control_dict['EOSFileName']
+
+    debugFlag = False
+    if 'debugFlag' in parameter_dict.control_dict.keys():
+        debugFlag = parameter_dict.control_dict['debugFlag']
+
+    if initial_condition_type == "TRENTo" and not isobar_seed_file:
+        isobar_seed_file = generate_isobar_seeds(
+            code_path, working_folder_name, parameter_dict)
+
+    cent_label = "XXX"
+    cent_label_pre = cent_label
+    if (initial_condition_database == "self"
+            or initial_condition_database == "fixCentrality"):
+        print("\U0001F375  Generate initial condition on the fly ... ")
+    else:
+        initial_condition_database = path.abspath(initial_condition_database)
+        print("\U0001F375  "
+              + "Pre-generated initial conditions from {} ...".format(
+                  initial_condition_database.format(cent_label)))
+
+    toolbar_width = 40
+    sys.stdout.write("\U0001F375  Generating {} jobs [{}]".format(
+        n_jobs, " "*toolbar_width))
+    sys.stdout.flush()
+    sys.stdout.write("\b"*(toolbar_width + 1))
+    event_id_offset = job_id
+    n_hydro_rescaled = n_hydro_per_job
+    for iev in range(n_jobs):
+        progress_i = (int(float(iev + 1)/n_jobs*toolbar_width)
+                      - int(float(iev)/n_jobs*toolbar_width))
+        for ii in range(progress_i):
+            sys.stdout.write("#")
+            sys.stdout.flush()
+        if (initial_condition_type in ('IPGlasma', 'IPGlasma+KoMPoST')
+                and parameter_dict.ipglasma_dict['type'] == 'minimumbias'):
+            precent_local = float(iev)/float(n_jobs)
+            for cen_min, cen_max, cen_label, cen_precent in centrality_list:
+                if precent_local >= cen_min and precent_local < cen_max:
+                    cent_label = cen_label
+                    rescale_factor = cen_precent/(cen_max - cen_min)
+                    n_hydro_rescaled = (max(
+                        1, int(n_hydro_per_job*rescale_factor + 0.1)))
+                    if cent_label != cent_label_pre:
+                        cent_label_pre = cent_label
+                        event_id_offset = 0
+                    break
+        generate_event_folders(initial_condition_database.format(cent_label),
+                               initial_condition_type, code_package_path,
+                               code_path, working_folder_name, cluster_name,
+                               iev, event_id_offset, n_hydro_rescaled,
+                               n_urqmd_per_hydro, n_threads, parameter_dict,
+                               afterburner_type, isobar_seed_file, EOSType, EOSId, EOSFileName,
+                               debugFlag)
+        event_id_offset += n_hydro_rescaled
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+    # copy script to collect final results
+    pwd = path.abspath(".")
+    script_path = path.join(code_package_path, "utilities")
+    shutil.copy(path.join(script_path, 'collect_events.sh'), pwd)
+    shutil.copy(path.join(script_path, 'combine_multiple_hdf5.py'), pwd)
+    script_path = (path.join(
+        code_package_path,
+        "codes/hadronic_afterburner_toolkit_code/ebe_scripts"))
+    shutil.copy(path.join(script_path, 'average_event_spvn_h5.py'), pwd)
+
+    walltime = '10:00:00'
+    if "walltime" in parameter_dict.control_dict.keys():
+        walltime = parameter_dict.control_dict["walltime"]
+    if cluster_name == "nersc":
+        shutil.copy(
+            path.join(code_package_path,
+                      'Cluster_supports/NERSC/job_MPI_wrapper.py'),
+            working_folder_name)
+
+        n_nodes = max(1, int(n_jobs*n_threads/64))
+        if args.node_type.lower() == "knl":
+            n_nodes = max(1, int(n_jobs*n_threads/272))
+        generate_nersc_mpi_job_script(working_folder_name,
+                                      args.node_type.lower(), n_nodes,
+                                      n_threads, int(n_jobs/n_nodes), walltime)
+
+    if cluster_name == "wsugrid":
+        shutil.copy(
+            path.join(code_package_path,
+                      'Cluster_supports/WSUgrid/submit_all_jobs.sh'), pwd)
+
+    if cluster_name == "stampede2":
+        nThreadsPerNode = 1
+        if args.node_type.lower() == "skx":
+            nThreadsPerNode = 96
+        elif args.node_type.lower() == "knl":
+            nThreadsPerNode = 272
+        elif args.node_type.lower() == "icx":
+            nThreadsPerNode = 160
+        shutil.copy(
+            path.join(code_package_path,
+                      'Cluster_supports/Stampede2/job_MPI_wrapper.py'),
+            working_folder_name)
+        n_nodes = max(1, int(n_jobs*n_threads/nThreadsPerNode))
+        if n_nodes*nThreadsPerNode < n_jobs*n_threads:
+            n_nodes += 1
+
+        generate_Stampede2_mpi_job_script(working_folder_name,
+                                          args.node_type.lower(), n_nodes,
+                                          n_jobs, n_threads, walltime)
+        script_path = path.join(code_package_path, "utilities")
+        shutil.copy(path.join(script_path, 'collect_events.sh'),
+                    working_folder_name)
+        shutil.copy(path.join(script_path, 'combine_multiple_hdf5.py'),
+                    working_folder_name)
+
+    if cluster_name == "anvil":
+        nThreadsPerNode = 128
+        shutil.copy(
+            path.join(code_package_path,
+                      'Cluster_supports/Anvil/job_MPI_wrapper.py'),
+            working_folder_name)
+        n_nodes = max(1, int(n_jobs*n_threads/nThreadsPerNode))
+        nTaskPerNode = int(nThreadsPerNode/n_threads)
+        if n_nodes*nThreadsPerNode < n_jobs*n_threads:
+            n_nodes += 1
+
+        generate_Anvil_mpi_job_script(working_folder_name,
+                                      args.node_type.lower(), n_nodes,
+                                      nTaskPerNode, n_threads, walltime)
+        script_path = path.join(code_package_path, "utilities")
+        shutil.copy(path.join(script_path, 'collect_events.sh'),
+                    working_folder_name)
+        shutil.copy(path.join(script_path, 'combine_multiple_hdf5.py'),
+                    working_folder_name)
+
+
+if __name__ == "__main__":
+    main()
