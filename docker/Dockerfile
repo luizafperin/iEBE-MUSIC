@@ -44,7 +44,7 @@ ENV HOME /opt/
 # download and compile the iEBE-MUSIC framework
 RUN cd ${HOME} && \
     git clone https://github.com/luizafperin/iEBE.git -b main && \
-    cd iEBE-MUSIC/codes && \
+    cd iEBE/codes && \
     bash get_code_packages_test.sh && \
     ./compile_code_packages.sh && \
     cd ../EOS_database && \
