@@ -121,7 +121,6 @@ export APPTAINERENV_TMPDIR="${TMPDIR}"
 export APPTAINERENV_XDG_DATA_HOME="${XDG_DATA_HOME}"
 export APPTAINERENV_XDG_CACHE_HOME="${XDG_CACHE_HOME}"
 export APPTAINERENV_TRENTO_CACHE="${TRENTO_CACHE}"
-export APPTAINERENV_HOME="${jobdir}"
 
 mkdir -p "${TMPDIR}" "${XDG_DATA_HOME}" "${XDG_CACHE_HOME}" "${TRENTO_CACHE}"
 mkdir -p playground
@@ -157,8 +156,8 @@ printf "Running on: `/bin/hostname`\\n"
 
     if para_dict_["bayesFlag"]:
         script.write('-b ${bayesFile} ')
-
-    script.write('--nocopy --continueFlag\n')
+        
+    script.write('\n')
 
     # SECOND STEP
     script.write("""
