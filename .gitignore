@@ -1,4 +1,5 @@
 
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -132,3 +133,4 @@ nucleon-seeds.hdf
 hrg_s1_run1/
 hrg_*/
 hrg_s0/
+*.swp
