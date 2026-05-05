@@ -145,7 +145,6 @@ trento_dict = {
     'quiet': True, ###
     'output': 'test_path.dat',
     'reduced-thickness': 0, ###
-    'random-seed': 12345,
     'fluctuation': 1 ,      # gamma fluctuations
     'nucleon-width': 0.5,    # nucleon width
     'cross-section': 6.4,   # inelastic nucleon-nucleon cross-section

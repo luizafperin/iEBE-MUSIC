@@ -130,6 +130,7 @@ trento_dict = {
     'b-max': 0,             # maximum b
     'grid-max': 10,          #####
     'grid-step': 0.2,        #####
+    'random-seed': 12345,
 }
 
 # MUSIC
@@ -181,6 +182,7 @@ iss_dict = {
     'number_of_particles_needed': 100000,  # number of hadrons to sample
     'local_charge_conservation': 0,  # flag to impose local charge conservation
     'global_momentum_conservation': 0,  # flag to impose GMC
+    'randomSeed': -1,
 }
 
 smash_config_dict = {
@@ -228,4 +230,5 @@ hadronic_afterburner_toolkit_dict = {
     'compute_corr_rap_dep':
         0,  # flag to compute the rapidity dependent multi-particle correlation
     'resonance_weak_feed_down_flag': 0,  # include weak feed down contribution
+    'randomSeed': -1,
 }

@@ -610,6 +610,9 @@ do
     mv fort.14 ../urqmd/OSCAR.input
     #rm -fr ../iSS/OSCAR.DAT
     cd ../urqmd
+    # Set unique random seed for UrQMD
+    URQMD_SEED=$((RANDOMSEED + 1000 + iev))
+    sed -i "s/^#rsd.*/rsd $URQMD_SEED/" uqmd.burner
     ./runqmd.sh > run.log
     mv particle_list.dat ../UrQMD_results/particle_list_${iev}.dat
     rm -fr OSCAR.input
