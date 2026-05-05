@@ -151,14 +151,14 @@ printf "Job running as user: `/usr/bin/id`\\n"
 
     if para_dict_["bayesFlag"]:
         script.write(
-            'singularity exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" "${SIF}" '
+            'apptainer exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" --pwd "${SCRATCH_DIR}" "${SIF}"'
             "/opt/iEBE-MUSIC/generate_jobs.py -w playground -c OSG "
             "-par ${parafile} -id ${processId} -n_th ${nthreads} "
             "-n_urqmd ${nthreads} -n_hydro ${nHydroEvents} -seed ${seed} "
             "-b ${bayesFile} --nocopy --continueFlag\n")
     else:
         script.write(
-            'singularity exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" "${SIF}" '
+            'apptainer exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" --pwd "${SCRATCH_DIR}" "${SIF}" '
             "/opt/iEBE-MUSIC/generate_jobs.py -w playground -c OSG "
             "-par ${parafile} -id ${processId} -n_th ${nthreads} "
             "-n_urqmd ${nthreads} -n_hydro ${nHydroEvents} -seed ${seed} "
@@ -167,7 +167,7 @@ printf "Job running as user: `/usr/bin/id`\\n"
     script.write("""
 cd playground/event_0
 mv EVENT_RESULTS_${processId}.tar.gz playground/event_0
-singularity exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" "${SIF}" bash submit_job.script
+apptainer exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" --pwd "${SCRATCH_DIR}" "${SIF}" bash submit_job.script
 status=$?
 if [ $status -ne 0 ]; then
     exit $status
