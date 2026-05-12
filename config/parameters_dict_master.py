@@ -617,7 +617,7 @@ iss_dict = {
         0,  # output particle samples into individual files
     'store_samples_in_memory': 1,  # flag to store particle samples in memory
     'use_OSCAR_format': 1,  # output results in OSCAR format
-    'use_OSCAR2013': 0,  # output results in OSCAR2013 format
+    'use_OSCAR2013': 1,  # output results in OSCAR2013 format
     'use_gzip_format': 0,  # output results in gzip format (only works with
     # store_samples_in_memory = 1)
     'use_binary_format': 0,

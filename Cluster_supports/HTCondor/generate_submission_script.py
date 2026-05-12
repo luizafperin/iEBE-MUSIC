@@ -99,6 +99,7 @@ queue {2:d}""".format(para_dict_["n_threads"], para_dict_["memory_per_job"],
 
 
 def write_job_running_script_urqmd(para_dict_):
+    # sif is the last positional arg: $6 (no bayes) or $7 (bayes)
     sif_pos = 7 if para_dict_["bayesFlag"] else 6
 
     script = open("run_singularity.sh", "w")
@@ -110,70 +111,68 @@ nHydroEvents=$3
 nthreads=$4
 seed=$5
 
+export PYTHONIOENCODING=utf-8
+export PATH="${PATH}:/usr/lib64/openmpi/bin:/usr/local/gsl/2.5/x86_64/bin"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/lib:/usr/local/gsl/2.5/x86_64/lib64"
+
 jobdir=$(pwd)
+export JOBDIR="${jobdir}"
 export TMPDIR="${jobdir}/tmp"
 export XDG_DATA_HOME="${jobdir}/.local/share"
 export XDG_CACHE_HOME="${jobdir}/.cache"
 export TRENTO_CACHE="${jobdir}/.trento"
 
-# Use Apptainer env vars (not Singularity)
-export APPTAINERENV_TMPDIR="${TMPDIR}"
-export APPTAINERENV_XDG_DATA_HOME="${XDG_DATA_HOME}"
-export APPTAINERENV_XDG_CACHE_HOME="${XDG_CACHE_HOME}"
-export APPTAINERENV_TRENTO_CACHE="${TRENTO_CACHE}"
+export SINGULARITYENV_TMPDIR="${TMPDIR}"
+export SINGULARITYENV_XDG_DATA_HOME="${XDG_DATA_HOME}"
+export SINGULARITYENV_XDG_CACHE_HOME="${XDG_CACHE_HOME}"
+export SINGULARITYENV_TRENTO_CACHE="${TRENTO_CACHE}"
 
-mkdir -p "${TMPDIR}" "${XDG_DATA_HOME}" "${XDG_CACHE_HOME}" "${TRENTO_CACHE}"
-mkdir -p playground
+mkdir -p "${TMPDIR}"
+mkdir -p "${XDG_DATA_HOME}"
+mkdir -p "${XDG_CACHE_HOME}"
+mkdir -p "${TRENTO_CACHE}"
+mkdir -p "${XDG_DATA_HOME}/trento"
 
 printf "Start time: `/bin/date`\\n"
-printf "Running on: `/bin/hostname`\\n"
+printf "Job is running on node: `/bin/hostname`\\n"
+printf "system kernel: `uname -r`\\n"
+printf "Job running as user: `/usr/bin/id`\\n"
 
 """)
-
     if para_dict_["bayesFlag"]:
         script.write("bayesFile=$6\n")
 
-    script.write("SINGULARITY_IMAGE=${{{}}}\n".format(sif_pos))
+    script.write("SINGULARITY_IMAGE=${{{}}}\n\n".format(sif_pos))
+
+    # HTCondor transfers the .sif as basename into the scratch dir.
+    # Capture scratch dir and build absolute SIF path before any cd.
     script.write('SCRATCH_DIR="${PWD}"\n')
     script.write('SIF="${SCRATCH_DIR}/$(basename ${SINGULARITY_IMAGE})"\n\n')
 
-    # MAIN EXECUTION
-    script.write(
-        'apptainer exec '
-        '--writable-tmpfs '
-        '--bind "${SCRATCH_DIR}:${SCRATCH_DIR}" '
-        '--pwd "${SCRATCH_DIR}" '
-        '"${SIF}" '
-        'python3 /opt/iEBE-MUSIC/generate_jobs.py '
-        '-w playground -c OSG '
-        '-par ${parafile} '
-        '-id ${processId} '
-        '-n_th ${nthreads} '
-        '-n_urqmd ${nthreads} '
-        '-n_hydro ${nHydroEvents} '
-        '-seed ${seed} '
-    )
-
     if para_dict_["bayesFlag"]:
-        script.write('-b ${bayesFile} ')
-        
-    script.write('\n')
+        script.write(
+            'singularity exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" "${SIF}" '
+            "/opt/iEBE-MUSIC/generate_jobs.py -w playground -c OSG "
+            "-par ${parafile} -id ${processId} -n_th ${nthreads} "
+            "-n_urqmd ${nthreads} -n_hydro ${nHydroEvents} -seed ${seed} "
+            "-b ${bayesFile} --nocopy --continueFlag\n")
+    else:
+        script.write(
+            'singularity exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" "${SIF}" '
+            "/opt/iEBE-MUSIC/generate_jobs.py -w playground -c OSG "
+            "-par ${parafile} -id ${processId} -n_th ${nthreads} "
+            "-n_urqmd ${nthreads} -n_hydro ${nHydroEvents} -seed ${seed} "
+            "--nocopy --continueFlag\n")
 
-    # SECOND STEP
     script.write("""
-apptainer exec \
-  --writable-tmpfs \
-  --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" \
-  --pwd "${SCRATCH_DIR}" \
-  "${SIF}" \
-  bash playground/event_0/submit_job.script
-
+cd playground/event_0
+mv EVENT_RESULTS_${processId}.tar.gz playground/event_0
+singularity exec --bind "${SCRATCH_DIR}:${SCRATCH_DIR}" "${SIF}" bash submit_job.script
 status=$?
 if [ $status -ne 0 ]; then
     exit $status
 fi
 """)
-
     script.close()
 
 
@@ -223,6 +222,10 @@ WhenToTransferOutput = ON_EXIT
     input_files.append(sif)
     script.write("\ntransfer_input_files = {}\n".format(", ".join(input_files)))
 
+    # ── TEMPORARY DEBUG ──────────────────────────────────────────────────────────
+    # TRENTo is copied into EVENT_RESULTS in run_singularity.sh so it travels
+    # with each job's unique result directory.
+    # To revert: remove the cp step from run_singularity.sh (marked there too).
     script.write("""
 transfer_output_files = playground/event_0/EVENT_RESULTS_$(Process)
 
@@ -350,6 +353,10 @@ status=$?
 if [ $status -ne 0 ]; then
     exit $status
 fi
+# ── TEMPORARY DEBUG: copy TRENTo into EVENT_RESULTS so it transfers with the job ──
+# Revert: remove the two lines below (cp and the comment).
+cp -r TRENTo EVENT_RESULTS_${processId}/
+# ── END TEMPORARY DEBUG ────────────────────────────────────────────────────────────
 """)
     script.close()
 

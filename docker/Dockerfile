@@ -45,7 +45,7 @@ ENV HOME /opt/
 RUN cd ${HOME} && \
     git clone https://github.com/luizafperin/iEBE-MUSIC.git -b main && \
     cd iEBE-MUSIC/codes && \
-    bash get_code_packages_test.sh && \
+    bash get_code_packages.sh && \
     ./compile_code_packages.sh && \
     cd ../EOS_database && \
     bash download_EOSdatabase1D.sh && \

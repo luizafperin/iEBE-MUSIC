@@ -427,7 +427,6 @@ export OMP_NUM_THREADS={0:d}
 # hydro evolution
 ./MUSIChydro music_input_mode_2 > run.log
 ./sweeper.sh $results_folder
-cp run.log $results_folder/run.log
 )
 """)
 
@@ -760,15 +759,9 @@ def generate_event_folders(initial_condition_database, initial_condition_type,
               # process ID (event_id_offset) to index unique configs per job.
               # Locally n_jobs>1 and job_id=0, so event_id_offset = iev*n_hydro
               # which would skip indices when n_hydro>1 — use event_id instead.
-              
-              #seed_idx = event_id_offset if cluster_name == "osg" else event_id
-              #target_start = 2*seed_idx
-              #projectile_start = 2*seed_idx + 1
-              
-              seed_idx = 0
+              seed_idx = event_id_offset if cluster_name == "osg" else event_id
               target_start = 2*seed_idx
               projectile_start = 2*seed_idx + 1
-              #print(f"using seed {seed_idx}")
               
               target_yaml_src = path.join(param_folder, 'Isobar-Sampler_target/isobars-conf_target.yaml')
               projectile_yaml_src = path.join(param_folder, 'Isobar-Sampler_projectile/isobars-conf_projectile.yaml')
@@ -1014,7 +1007,7 @@ def generate_event_folders(initial_condition_database, initial_condition_type,
                 path.join(sub_event_folder,
                           'hadronic_afterburner_toolkit/parameters.dat'))
             for link_i in ['hadronic_afterburner_tools.e', 'EOS']:
-                subprocess.call("ln -s {0:s} {1:s}".format(
+                subprocess.call("ln -sf {0:s} {1:s}".format(
                     path.abspath(
                         path.join(
                             code_path,
@@ -1030,7 +1023,7 @@ def generate_event_folders(initial_condition_database, initial_condition_type,
         path.join(param_folder, 'hadronic_afterburner_toolkit/parameters.dat'),
         path.join(event_folder, 'hadronic_afterburner_toolkit/parameters.dat'))
     for link_i in ['hadronic_afterburner_tools.e', 'EOS']:
-        subprocess.call("ln -s {0:s} {1:s}".format(
+        subprocess.call("ln -sf {0:s} {1:s}".format(
             path.abspath(
                 path.join(
                     code_path,

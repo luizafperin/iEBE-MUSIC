@@ -306,17 +306,7 @@ def run_hydro_event(final_results_folder, event_id):
         if not hydro_success:
             print("{} Hydrodynamic run failed, rerun ... ".format(logo),
                   flush=True)
-            for f in os.listdir(results_folder):
-                path_to_remove = path.join(results_folder, f)
-
-                # keep all .log files
-                if f.endswith(".log"):
-                    continue
-
-                if path.isdir(path_to_remove):
-                    shutil.rmtree(path_to_remove)
-                else:
-                    os.remove(path_to_remove)
+            shutil.rmtree(results_folder)
 
     if not hydro_success:
         curr_time = time.asctime()

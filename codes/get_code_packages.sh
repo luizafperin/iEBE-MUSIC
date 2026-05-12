@@ -86,8 +86,8 @@ fi
 
 # download hadronic afterner
 rm -fr hadronic_afterburner_toolkit_code
-git clone https://github.com/chunshen1987/hadronic_afterburner_toolkit -b main hadronic_afterburner_toolkit_code
-#(cd hadronic_afterburner_toolkit_code; git checkout 1045565e1213bff1c28017c74d69a77ff8b5299e)
+git clone --depth=5 https://github.com/chunshen1987/hadronic_afterburner_toolkit -b main hadronic_afterburner_toolkit_code
+#(cd hadronic_afterburner_toolkit_code; git checkout e0cb8e5869bc6a8855f904d46d4c9e33a61db93a )
 rm -fr hadronic_afterburner_toolkit_code/.git
 
 #download deltaf_tables for iSS

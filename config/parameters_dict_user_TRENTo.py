@@ -122,7 +122,7 @@ trento_dict = {
     'quiet': True, ###
     'output': 'test_path.dat',
     'reduced-thickness': 0, ###
-    'fluctuation': 1,      # gamma fluctuations
+    'fluctuation': 1 ,      # gamma fluctuations
     'nucleon-width': 0.5,    # nucleon width
     'cross-section': 4.23,   # inelastic nucleon-nucleon cross-section
     'normalization': 15,      # normalization
@@ -144,7 +144,7 @@ music_dict = {
     'Delta_Tau': 0.005,  # time step to use in the evolution [fm/c]
     'boost_invariant': 1,  # whether the simulation is boost-invariant
     'EOS_to_use': 24,  # type of the equation of state
-    # 24: EOS-gp
+    # 9: hotQCD EOS with UrQMD
     # transport coefficients
     'Eta_grid_size': 1.0,
     'Grid_size_in_eta': 1.0,
@@ -165,8 +165,8 @@ music_dict = {
 
     # parameters for freeze out and Cooper-Frye
     'N_freeze_out': 1,
-    'eps_freeze_max': 0.18,
-    'eps_freeze_min': 0.18,
+    'eps_freeze_max': 0.25,
+    'eps_freeze_min': 0.25,
 }
 
 # iSS
@@ -177,12 +177,17 @@ iss_dict = {
     'include_deltaf_diffusion':
         0,  # include delta f contribution from diffusion
     'sample_upto_desired_particle_number':
-        1,  # 1: flag to run sampling until desired
+        0,  # 1: flag to run sampling until desired
     # particle numbers is reached
     'number_of_particles_needed': 100000,  # number of hadrons to sample
     'local_charge_conservation': 0,  # flag to impose local charge conservation
     'global_momentum_conservation': 0,  # flag to impose GMC
-    'randomSeed': -1,
+    'number_of_repeated_sampling': 500,
+    'use_OSCAR_format': 1,  # output results in OSCAR format
+    'use_OSCAR2013': 0,  # output results in OSCAR2013 format
+    'output_samples_into_files':
+        1,  # output particle samples into individual files
+    'store_samples_in_memory': 0,  # flag to store particle samples in memory
 }
 
 smash_config_dict = {
@@ -223,12 +228,14 @@ smash_config_dict = {
 
 # hadronic afterburner toolkit
 hadronic_afterburner_toolkit_dict = {
-    'event_buffer_size': 100000,  # the number of events read in at once
+    'event_buffer_size': 5000,  # the number of events read in at once
     'compute_correlation': 0,  # flag to compute correlation function
     'flag_charge_dependence':
         0,  # flag to compute charge dependence correlation
     'compute_corr_rap_dep':
         0,  # flag to compute the rapidity dependent multi-particle correlation
     'resonance_weak_feed_down_flag': 0,  # include weak feed down contribution
-    'randomSeed': -1,
+    'analyze_HBT': 1,
+    'rapidityPTDistributionFlag': 1,  # output Qn vectors in (eta, pT)
+    'pidwithRapidityPTDistribution': 1,
 }
