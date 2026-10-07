@@ -134,7 +134,7 @@ on_exit_hold = (ExitBySignal == True) || \
 
 request_cpus = {0:d}
 request_memory = {1:d} GB
-request_disk = 4 GB
+request_disk = 8 GB
 
 queue {2:d}
 """.format(
